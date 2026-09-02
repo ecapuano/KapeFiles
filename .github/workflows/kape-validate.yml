@@ -70,7 +70,7 @@ jobs:
             if ($out -notmatch [regex]::Escape($n)) { Write-Error "Target '$n' not listed by kape.exe --tlist"; exit 1 }
             Write-Host "OK: $n listed"
           }
-          if ($out -match '(?im)^.*\berror\b.*$') { Write-Warning "kape.exe reported errors while loading Targets - see tlist.txt" }
+          if ($out -match '(?im)^\s*(error|exception|unhandled)') { Write-Warning "kape.exe reported errors while loading Targets - see tlist.txt" }
 
       - name: Plant fixture files
         shell: pwsh
@@ -87,7 +87,7 @@ jobs:
         shell: pwsh
         run: |
           & "$env:KAPE_DIR\kape.exe" --tsource C: --tdest C:\kout --target "${{ inputs.targets }}" --tflush 2>&1 | Tee-Object C:\results\collection.txt
-          Copy-Item C:\kout\*ConsoleLog* C:\results\ -ErrorAction SilentlyContinue
+          Copy-Item C:\kout\*ConsoleLog*,C:\kout\*CopyLog*,C:\kout\*SkipLog* C:\results\ -ErrorAction SilentlyContinue
           Get-ChildItem C:\kout -Recurse -File | ForEach-Object { $_.FullName } | Out-File C:\results\kout-tree.txt
 
       - name: Verify collected files against manifest

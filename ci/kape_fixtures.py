@@ -59,17 +59,17 @@ def main():
                     if name in ("", "."):
                         continue
                 win_file = winpath + name
-                plant(win_to_local(win_file, args.root), f"fixture for {t['Name']}\n")
+                plant(win_to_local(win_file, args.root), f"fixture for {t['Name']}\n{win_file}\n")
                 expected.append({"target": t["Name"], "win": win_file})
             if t.get("Recursive"):
                 win_file = winpath + "nested\\deeper\\" + mask_to_names(t.get("FileMask"))[0]
-                plant(win_to_local(win_file, args.root), f"nested fixture for {t['Name']}\n")
+                plant(win_to_local(win_file, args.root), f"nested fixture for {t['Name']}\n{win_file}\n")
                 expected.append({"target": t["Name"], "win": win_file})
 
     decoys = []
     for d in args.decoy:
         win_file = d.replace("%user%", args.user)
-        plant(win_to_local(win_file, args.root), "DECOY - must not be collected\n")
+        plant(win_to_local(win_file, args.root), f"DECOY - must not be collected\n{win_file}\n")
         decoys.append({"win": win_file})
 
     with open(args.manifest, "w", encoding="utf-8") as fh:
