@@ -16,7 +16,7 @@ on:
       fixture_tkapes:
         description: Space separated .tkape paths (relative to repo) used to plant fixture files
         required: true
-        default: Targets/Apps/ClaudeCode.tkape Targets/Apps/OpenAICodex.tkape
+        default: Targets/Apps/ClaudeCode.tkape Targets/Apps/OpenAICodex.tkape Targets/Apps/GitHubCopilot.tkape Targets/Apps/GeminiCLI.tkape Targets/Apps/OpenCode.tkape Targets/Apps/Cursor.tkape Targets/Apps/Cline.tkape Targets/Apps/RooCode.tkape
 
 jobs:
   validate:
@@ -81,7 +81,12 @@ jobs:
             --decoy 'C:\Users\%user%\.codex\auth.json' `
             --decoy 'C:\Users\%user%\.claude\sessions\1234.abcd.key' `
             --decoy 'C:\Users\%user%\.claude\plugins\cache\somePlugin\index.js' `
-            --decoy 'C:\Users\%user%\.codex\cache\somePlugin\index.js'
+            --decoy 'C:\Users\%user%\.codex\cache\somePlugin\index.js' `
+            --decoy 'C:\Users\%user%\.gemini\oauth_creds.json' `
+            --decoy 'C:\Users\%user%\.local\share\opencode\auth.json' `
+            --decoy 'C:\Users\%user%\.copilot\mcp-secrets\token.json' `
+            --decoy 'C:\Users\%user%\.cline\data\secrets.json' `
+            --decoy 'C:\Users\%user%\.cursor\projects\proj\canvases\node_modules\x\index.js'
 
       - name: Live collection with kape.exe
         shell: pwsh

@@ -53,7 +53,7 @@ def main():
         for t in doc["Targets"]:
             if t["Path"].lower().endswith(".tkape"):
                 continue
-            winpath = t["Path"].replace("%user%", args.user).rstrip("\\") + "\\"
+            winpath = t["Path"].replace("%user%", args.user).rstrip("\\").replace("*", "wildcard") + "\\"
             for name in mask_to_names(t.get("FileMask")):
                 if not name or name.startswith("."):
                     if name in ("", "."):
