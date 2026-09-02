@@ -19,6 +19,15 @@ jobs:
             $roots | ForEach-Object { Get-ChildItem $_ -Force -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName } } |
               Sort-Object -Unique | Out-File "C:\probe\snap-$tag.txt"
           }
+          function RunTimed($cmdline, $seconds) {
+            "-> $cmdline" | Tee-Object C:\probe\report.txt -Append
+            $j = Start-Job -ScriptBlock { param($c) cmd /c "$c < NUL 2>&1" } -ArgumentList $cmdline
+            $done = Wait-Job $j -Timeout $seconds
+            if (-not $done) { Stop-Job $j; "   (timed out after ${seconds}s, killed)" | Tee-Object C:\probe\report.txt -Append }
+            Receive-Job $j -ErrorAction SilentlyContinue | Select-Object -First 8 | Tee-Object C:\probe\report.txt -Append
+            Remove-Job $j -Force -ErrorAction SilentlyContinue
+            Get-Process node,bun,copilot,gemini,opencode -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+          }
           function Diff($a, $b, $label) {
             $new = Compare-Object (Get-Content "C:\probe\snap-$a.txt") (Get-Content "C:\probe\snap-$b.txt") |
               Where-Object SideIndicator -eq '=>' | Select-Object -ExpandProperty InputObject
@@ -42,71 +51,87 @@ jobs:
         continue-on-error: true
         shell: pwsh
         run: |
+          $ErrorActionPreference = 'Continue'; $PSNativeCommandUseErrorActionPreference = $false
           . C:\probe\helpers.ps1
-          npm install -g @github/copilot 2>&1 | Select-Object -Last 2
-          copilot --version
-          copilot --help | Select-Object -First 5
-          Start-Process -FilePath copilot -ArgumentList '-p','hello' -NoNewWindow -PassThru | Wait-Process -Timeout 30 -ErrorAction SilentlyContinue
-          Get-Process copilot,node -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
-          Snap copilot; Diff base copilot 'GitHub Copilot CLI'
+          try {
+            npm install -g @github/copilot 2>&1 | Select-Object -Last 2
+            where.exe copilot | Tee-Object C:\probe\report.txt -Append
+            RunTimed 'copilot --version' 30
+            RunTimed 'copilot -p hello' 40
+          } finally { Snap copilot; Diff base copilot 'GitHub Copilot CLI' }
 
       - name: Gemini CLI
         continue-on-error: true
         shell: pwsh
         run: |
+          $ErrorActionPreference = 'Continue'; $PSNativeCommandUseErrorActionPreference = $false
           . C:\probe\helpers.ps1
-          npm install -g @google/gemini-cli 2>&1 | Select-Object -Last 2
-          gemini --version
-          Start-Process -FilePath gemini -ArgumentList '-p','hello' -NoNewWindow -PassThru | Wait-Process -Timeout 30 -ErrorAction SilentlyContinue
-          Get-Process gemini,node -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
-          Snap gemini; Diff copilot gemini 'Gemini CLI'
+          try {
+            npm install -g @google/gemini-cli 2>&1 | Select-Object -Last 2
+            where.exe gemini | Tee-Object C:\probe\report.txt -Append
+            RunTimed 'gemini --version' 30
+            RunTimed 'gemini -p hello' 40
+          } finally { Snap gemini; Diff copilot gemini 'Gemini CLI' }
 
       - name: OpenCode
         continue-on-error: true
         shell: pwsh
         run: |
+          $ErrorActionPreference = 'Continue'; $PSNativeCommandUseErrorActionPreference = $false
           . C:\probe\helpers.ps1
-          npm install -g opencode-ai 2>&1 | Select-Object -Last 2
-          opencode --version
-          Start-Process -FilePath opencode -ArgumentList 'run','hello' -NoNewWindow -PassThru | Wait-Process -Timeout 45 -ErrorAction SilentlyContinue
-          Get-Process opencode,node,bun -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
-          Snap opencode; Diff gemini opencode 'OpenCode'
+          try {
+            npm install -g opencode-ai 2>&1 | Select-Object -Last 2
+            where.exe opencode | Tee-Object C:\probe\report.txt -Append
+            RunTimed 'opencode --version' 30
+            RunTimed 'opencode run hello' 45
+            RunTimed 'opencode auth list' 30
+          } finally { Snap opencode; Diff gemini opencode 'OpenCode' }
 
       - name: VS Code extension IDs and storage roots
         continue-on-error: true
         shell: pwsh
         run: |
+          $ErrorActionPreference = 'Continue'; $PSNativeCommandUseErrorActionPreference = $false
           . C:\probe\helpers.ps1
-          code --version | Select-Object -First 1
-          foreach ($id in 'anthropic.claude-code','openai.chatgpt','github.copilot-chat','saoudrizwan.claude-dev','rooveterinaryinc.roo-cline') {
-            $r = code --install-extension $id --force 2>&1 | Select-Object -Last 1
-            "$id => $r" | Tee-Object C:\probe\report.txt -Append
-          }
-          # launch VS Code once so the userData tree and globalStorage roots are created
-          Start-Process -FilePath code -ArgumentList '--new-window','--disable-gpu','--wait','C:\probe' -PassThru | Wait-Process -Timeout 60 -ErrorAction SilentlyContinue
-          Get-Process Code -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
-          "===== VS Code userData (%APPDATA%\Code) =====" | Tee-Object C:\probe\report.txt -Append
-          Get-ChildItem "$env:APPDATA\Code\User" -Recurse -Force -Depth 2 -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName } | Tee-Object C:\probe\report.txt -Append
-          "===== installed extensions (~\.vscode\extensions) =====" | Tee-Object C:\probe\report.txt -Append
-          Get-ChildItem "$env:USERPROFILE\.vscode\extensions" -Force -ErrorAction SilentlyContinue | ForEach-Object { $_.Name } | Tee-Object C:\probe\report.txt -Append
-          Snap vscode
+          try {
+            code --version | Select-Object -First 1
+            foreach ($id in 'anthropic.claude-code','openai.chatgpt','github.copilot-chat','saoudrizwan.claude-dev','rooveterinaryinc.roo-cline') {
+              $r = cmd /c "code --install-extension $id --force 2>&1" | Select-Object -Last 1
+              "$id => $r" | Tee-Object C:\probe\report.txt -Append
+            }
+            $codeExe = Get-ChildItem 'C:\Program Files\Microsoft VS Code','C:\Users\runneradmin\AppData\Local\Programs\Microsoft VS Code' -Filter Code.exe -ErrorAction SilentlyContinue | Select-Object -First 1
+            "Code.exe => $($codeExe.FullName)" | Tee-Object C:\probe\report.txt -Append
+            if ($codeExe) {
+              Start-Process -FilePath $codeExe.FullName -ArgumentList '--disable-gpu','--new-window','C:\probe'
+              Start-Sleep 60
+              Get-Process Code -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+            }
+            "===== VS Code userData (%APPDATA%\Code\User, depth 2) =====" | Tee-Object C:\probe\report.txt -Append
+            Get-ChildItem "$env:APPDATA\Code\User" -Recurse -Force -Depth 2 -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName } | Tee-Object C:\probe\report.txt -Append
+            "===== installed extensions (%USERPROFILE%\.vscode\extensions) =====" | Tee-Object C:\probe\report.txt -Append
+            Get-ChildItem "$env:USERPROFILE\.vscode\extensions" -Force -ErrorAction SilentlyContinue | ForEach-Object { $_.Name } | Tee-Object C:\probe\report.txt -Append
+          } finally { Snap vscode; Diff opencode vscode 'VS Code + extensions' }
 
       - name: Cursor
         continue-on-error: true
         shell: pwsh
         run: |
+          $ErrorActionPreference = 'Continue'; $PSNativeCommandUseErrorActionPreference = $false
           . C:\probe\helpers.ps1
-          winget install --id Anysphere.Cursor --exact --silent --accept-package-agreements --accept-source-agreements --disable-interactivity 2>&1 | Select-Object -Last 3
-          $exe = Get-ChildItem "$env:LOCALAPPDATA\Programs" -Recurse -Filter Cursor.exe -ErrorAction SilentlyContinue | Select-Object -First 1
-          if (-not $exe) { $exe = Get-ChildItem 'C:\Program Files' -Recurse -Depth 2 -Filter Cursor.exe -ErrorAction SilentlyContinue | Select-Object -First 1 }
-          "Cursor.exe => $($exe.FullName)" | Tee-Object C:\probe\report.txt -Append
-          if ($exe) {
-            Start-Process -FilePath $exe.FullName -ArgumentList '--disable-gpu','C:\probe' -PassThru | Wait-Process -Timeout 60 -ErrorAction SilentlyContinue
-            Get-Process Cursor -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
-          }
-          Snap cursor; Diff vscode cursor 'Cursor'
-          "===== %APPDATA%\Cursor\User (depth 2) =====" | Tee-Object C:\probe\report.txt -Append
-          Get-ChildItem "$env:APPDATA\Cursor\User" -Recurse -Force -Depth 2 -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName } | Tee-Object C:\probe\report.txt -Append
+          try {
+            winget install --id Anysphere.Cursor --exact --silent --accept-package-agreements --accept-source-agreements --disable-interactivity 2>&1 | Select-Object -Last 2
+            $exe = Get-ChildItem "$env:LOCALAPPDATA\Programs" -Recurse -Depth 2 -Filter Cursor.exe -ErrorAction SilentlyContinue | Select-Object -First 1
+            "Cursor.exe => $($exe.FullName)" | Tee-Object C:\probe\report.txt -Append
+            if ($exe) {
+              Start-Process -FilePath $exe.FullName -ArgumentList '--disable-gpu','--new-window','C:\probe'
+              Start-Sleep 75
+              Get-Process Cursor -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+            }
+            "===== %APPDATA%\Cursor\User (depth 2) =====" | Tee-Object C:\probe\report.txt -Append
+            Get-ChildItem "$env:APPDATA\Cursor\User" -Recurse -Force -Depth 2 -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName } | Tee-Object C:\probe\report.txt -Append
+            "===== %USERPROFILE%\.cursor (depth 2) =====" | Tee-Object C:\probe\report.txt -Append
+            Get-ChildItem "$env:USERPROFILE\.cursor" -Recurse -Force -Depth 2 -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName } | Tee-Object C:\probe\report.txt -Append
+          } finally { Snap cursor; Diff vscode cursor 'Cursor' }
 
       - name: Upload probe report
         if: always()
