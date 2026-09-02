@@ -54,14 +54,16 @@ jobs:
           Remove-Item "$env:KAPE_DIR\Modules" -Recurse -Force
           Copy-Item repo\Targets "$env:KAPE_DIR\Targets" -Recurse
           Copy-Item repo\Modules "$env:KAPE_DIR\Modules" -Recurse
+          Get-ChildItem $env:KAPE_DIR | Select-Object Name, Length
+          if (-not (Test-Path "$env:KAPE_DIR\Targets\Compound")) { Write-Error "Targets copy failed"; exit 1 }
+          "Targets copied: $((Get-ChildItem "$env:KAPE_DIR\Targets" -Recurse -Filter *.tkape).Count) tkape files"
 
       - name: kape.exe --tlist (parse every Target)
         shell: pwsh
         run: |
           New-Item -ItemType Directory C:\results | Out-Null
-          Set-Location $env:KAPE_DIR
-          & .\kape.exe --tlist .\Targets 2>&1 | Tee-Object C:\results\tlist.txt
-          & .\kape.exe --tlist .\Targets --tdetail 2>&1 | Out-File C:\results\tlist-detail.txt
+          & "$env:KAPE_DIR\kape.exe" --tlist "$env:KAPE_DIR\Targets" 2>&1 | Tee-Object C:\results\tlist.txt
+          & "$env:KAPE_DIR\kape.exe" --tlist "$env:KAPE_DIR\Targets" --tdetail 2>&1 | Out-File C:\results\tlist-detail.txt
           $names = "${{ inputs.targets }}".Split(',') | ForEach-Object { $_.Trim() }
           $out = Get-Content C:\results\tlist.txt -Raw
           foreach ($n in $names) {
@@ -84,8 +86,7 @@ jobs:
       - name: Live collection with kape.exe
         shell: pwsh
         run: |
-          Set-Location $env:KAPE_DIR
-          & .\kape.exe --tsource C: --tdest C:\kout --target "${{ inputs.targets }}" --tflush 2>&1 | Tee-Object C:\results\collection.txt
+          & "$env:KAPE_DIR\kape.exe" --tsource C: --tdest C:\kout --target "${{ inputs.targets }}" --tflush 2>&1 | Tee-Object C:\results\collection.txt
           Copy-Item C:\kout\*ConsoleLog* C:\results\ -ErrorAction SilentlyContinue
           Get-ChildItem C:\kout -Recurse -File | ForEach-Object { $_.FullName } | Out-File C:\results\kout-tree.txt
 
