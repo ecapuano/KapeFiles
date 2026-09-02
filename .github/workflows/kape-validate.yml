@@ -33,6 +33,17 @@ jobs:
           ref: ${{ inputs.ref }}
           path: repo
 
+      - name: Record tested commit
+        shell: pwsh
+        run: |
+          $sha = git -C repo rev-parse HEAD
+          $subject = git -C repo log -1 --pretty=%s
+          "TESTED_SHA=$sha" | Out-File $env:GITHUB_ENV -Append
+          "TESTED_SUBJECT=$subject" | Out-File $env:GITHUB_ENV -Append
+          "Testing ${{ inputs.ref }} @ $sha  ($subject)"
+          New-Item -ItemType Directory C:\results -Force | Out-Null
+          "ref=${{ inputs.ref }}`nsha=$sha`nsubject=$subject`ntargets=${{ inputs.targets }}`nfixtures=${{ inputs.fixture_tkapes }}" | Out-File C:\results\tested-commit.txt
+
       - uses: actions/setup-python@v5
         with:
           python-version: '3.x'
@@ -45,7 +56,7 @@ jobs:
           Expand-Archive kape.zip -DestinationPath C:\kape-dist
           $exe = Get-ChildItem C:\kape-dist -Recurse -Filter kape.exe | Select-Object -First 1
           "KAPE_DIR=$($exe.DirectoryName)" | Out-File $env:GITHUB_ENV -Append
-          & $exe.FullName --version 2>&1 | Select-Object -First 3
+          & $exe.FullName --version 2>&1 | Select-Object -First 3 | Tee-Object C:\results\kape-version.txt
 
       - name: Replace shipped Targets/Modules with the branch under test
         shell: pwsh
@@ -61,7 +72,6 @@ jobs:
       - name: kape.exe --tlist (parse every Target)
         shell: pwsh
         run: |
-          New-Item -ItemType Directory C:\results | Out-Null
           & "$env:KAPE_DIR\kape.exe" --tlist "$env:KAPE_DIR\Targets" 2>&1 | Tee-Object C:\results\tlist.txt
           & "$env:KAPE_DIR\kape.exe" --tlist "$env:KAPE_DIR\Targets" --tdetail 2>&1 | Out-File C:\results\tlist-detail.txt
           $names = "${{ inputs.targets }}".Split(',') | ForEach-Object { $_.Trim() }
@@ -114,9 +124,61 @@ jobs:
           Get-ChildItem $env:USERPROFILE -Force -Filter '.codex*' | ForEach-Object { $_.FullName } | Tee-Object C:\results\real-install-observation.txt -Append
           Get-ChildItem "$env:USERPROFILE\.claude","$env:USERPROFILE\.codex" -Recurse -Force -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName } | Tee-Object C:\results\real-install-observation.txt -Append
 
+      - name: Write job summary
+        if: always()
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $kv = (Get-Content C:\results\kape-version.txt -ErrorAction SilentlyContinue | Where-Object { $_ -match 'KAPE version' }) -join ''
+          $found = (Select-String -Path C:\results\collection.txt -Pattern 'Found \d+ files|Copied \d+ out of \d+' -ErrorAction SilentlyContinue | ForEach-Object { $_.Line.Trim() }) -join '; '
+          $verdict = (Select-String -Path C:\results\verify.txt -Pattern '^summary:' -ErrorAction SilentlyContinue | ForEach-Object { $_.Line }) -join ''
+          $names = "${{ inputs.targets }}".Split(',') | ForEach-Object { $_.Trim() }
+          $listed = foreach ($n in $names) { if (Select-String -Path C:\results\tlist.txt -Pattern "^Target: $([regex]::Escape($n)) " -Quiet) { "- ``$n``: listed by ``kape.exe --tlist``" } else { "- ``$n``: NOT LISTED" } }
+          $total = (Select-String -Path C:\results\tlist.txt -Pattern '^Target: ' -ErrorAction SilentlyContinue | Measure-Object).Count
+          $decoys = (Get-Content C:\results\manifest.json -Raw | ConvertFrom-Json).decoys | ForEach-Object { "- ``$($_.win)``" }
+          @"
+          # KAPE Target Validation
+
+          | | |
+          |---|---|
+          | Tested ref | ``${{ inputs.ref }}`` |
+          | Tested commit | ``$env:TESTED_SHA`` $env:TESTED_SUBJECT |
+          | Targets under test | ``${{ inputs.targets }}`` |
+          | Fixture sources | ``${{ inputs.fixture_tkapes }}`` |
+          | KAPE | $kv (downloaded from Kroll's public updater endpoint) |
+          | Runner | $env:RUNNER_OS, $([System.Environment]::OSVersion.VersionString) |
+
+          ## Method
+          1. The branch's ``Targets\`` and ``Modules\`` replace the ones shipped with KAPE, then ``kape.exe --tlist`` parses every Target ($total Targets loaded).
+          2. ``ci/kape_fixtures.py`` reads each fixture .tkape and plants files matching every ``Path`` + ``FileMask`` (two name variants per mask, plus a nested file for ``Recursive`` entries) under ``C:\Users\testuser\``, with unique content so KAPE's SHA1 de-duplication cannot mask a miss.
+          3. Decoy files that must **not** be collected are planted alongside (credentials, session keys, plugin caches).
+          4. ``kape.exe --tsource C: --tdest C:\kout --target ${{ inputs.targets }}`` runs a live collection.
+          5. ``ci/kape_verify.py`` checks every planted file exists under ``C:\kout`` and no decoy does.
+
+          ## Parse check
+          $($listed -join "`n")
+
+          ## Collection
+          $found
+
+          ## Verdict
+          **$verdict**
+
+          ### Decoys (must not be collected)
+          $($decoys -join "`n")
+
+          <details><summary>Per-entry results (verify.txt)</summary>
+
+          ``````
+          $(Get-Content C:\results\verify.txt -Raw -ErrorAction SilentlyContinue)
+          ``````
+          </details>
+          "@ | Out-File $env:GITHUB_STEP_SUMMARY -Append
+
       - name: Upload results
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: kape-validation-${{ inputs.ref }}
           path: C:\results
+          retention-days: 90
