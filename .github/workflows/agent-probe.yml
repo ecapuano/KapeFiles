@@ -1,0 +1,116 @@
+name: Coding Agent Artifact Probe (Windows)
+
+# Installs coding-agent CLIs / extensions on a clean Windows runner and records
+# exactly which files and directories each one creates under the user profile.
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: windows-latest
+    steps:
+      - name: Snapshot helper
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory C:\probe | Out-Null
+          @'
+          function Snap($tag) {
+            $roots = @($env:USERPROFILE, $env:APPDATA, $env:LOCALAPPDATA, "$env:LOCALAPPDATA\Programs")
+            $roots | ForEach-Object { Get-ChildItem $_ -Force -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName } } |
+              Sort-Object -Unique | Out-File "C:\probe\snap-$tag.txt"
+          }
+          function Diff($a, $b, $label) {
+            $new = Compare-Object (Get-Content "C:\probe\snap-$a.txt") (Get-Content "C:\probe\snap-$b.txt") |
+              Where-Object SideIndicator -eq '=>' | Select-Object -ExpandProperty InputObject
+            "===== NEW top-level entries after: $label =====" | Tee-Object C:\probe\report.txt -Append
+            $new | Tee-Object C:\probe\report.txt -Append
+            foreach ($p in $new) {
+              if (Test-Path $p -PathType Container) {
+                "----- tree of $p (depth<=5, excluding node_modules/pkg) -----" | Tee-Object C:\probe\report.txt -Append
+                Get-ChildItem $p -Recurse -Force -Depth 5 -ErrorAction SilentlyContinue |
+                  Where-Object { $_.FullName -notmatch '\\node_modules\\|\\pkg\\' } |
+                  ForEach-Object { $_.FullName } | Tee-Object C:\probe\report.txt -Append
+              }
+            }
+          }
+          '@ | Out-File C:\probe\helpers.ps1
+          . C:\probe\helpers.ps1
+          Snap base
+          "USERPROFILE=$env:USERPROFILE  APPDATA=$env:APPDATA  LOCALAPPDATA=$env:LOCALAPPDATA" | Tee-Object C:\probe\report.txt
+
+      - name: GitHub Copilot CLI
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          . C:\probe\helpers.ps1
+          npm install -g @github/copilot 2>&1 | Select-Object -Last 2
+          copilot --version
+          copilot --help | Select-Object -First 5
+          Start-Process -FilePath copilot -ArgumentList '-p','hello' -NoNewWindow -PassThru | Wait-Process -Timeout 30 -ErrorAction SilentlyContinue
+          Get-Process copilot,node -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+          Snap copilot; Diff base copilot 'GitHub Copilot CLI'
+
+      - name: Gemini CLI
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          . C:\probe\helpers.ps1
+          npm install -g @google/gemini-cli 2>&1 | Select-Object -Last 2
+          gemini --version
+          Start-Process -FilePath gemini -ArgumentList '-p','hello' -NoNewWindow -PassThru | Wait-Process -Timeout 30 -ErrorAction SilentlyContinue
+          Get-Process gemini,node -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+          Snap gemini; Diff copilot gemini 'Gemini CLI'
+
+      - name: OpenCode
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          . C:\probe\helpers.ps1
+          npm install -g opencode-ai 2>&1 | Select-Object -Last 2
+          opencode --version
+          Start-Process -FilePath opencode -ArgumentList 'run','hello' -NoNewWindow -PassThru | Wait-Process -Timeout 45 -ErrorAction SilentlyContinue
+          Get-Process opencode,node,bun -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+          Snap opencode; Diff gemini opencode 'OpenCode'
+
+      - name: VS Code extension IDs and storage roots
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          . C:\probe\helpers.ps1
+          code --version | Select-Object -First 1
+          foreach ($id in 'anthropic.claude-code','openai.chatgpt','github.copilot-chat','saoudrizwan.claude-dev','rooveterinaryinc.roo-cline') {
+            $r = code --install-extension $id --force 2>&1 | Select-Object -Last 1
+            "$id => $r" | Tee-Object C:\probe\report.txt -Append
+          }
+          # launch VS Code once so the userData tree and globalStorage roots are created
+          Start-Process -FilePath code -ArgumentList '--new-window','--disable-gpu','--wait','C:\probe' -PassThru | Wait-Process -Timeout 60 -ErrorAction SilentlyContinue
+          Get-Process Code -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+          "===== VS Code userData (%APPDATA%\Code) =====" | Tee-Object C:\probe\report.txt -Append
+          Get-ChildItem "$env:APPDATA\Code\User" -Recurse -Force -Depth 2 -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName } | Tee-Object C:\probe\report.txt -Append
+          "===== installed extensions (~\.vscode\extensions) =====" | Tee-Object C:\probe\report.txt -Append
+          Get-ChildItem "$env:USERPROFILE\.vscode\extensions" -Force -ErrorAction SilentlyContinue | ForEach-Object { $_.Name } | Tee-Object C:\probe\report.txt -Append
+          Snap vscode
+
+      - name: Cursor
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          . C:\probe\helpers.ps1
+          winget install --id Anysphere.Cursor --exact --silent --accept-package-agreements --accept-source-agreements --disable-interactivity 2>&1 | Select-Object -Last 3
+          $exe = Get-ChildItem "$env:LOCALAPPDATA\Programs" -Recurse -Filter Cursor.exe -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $exe) { $exe = Get-ChildItem 'C:\Program Files' -Recurse -Depth 2 -Filter Cursor.exe -ErrorAction SilentlyContinue | Select-Object -First 1 }
+          "Cursor.exe => $($exe.FullName)" | Tee-Object C:\probe\report.txt -Append
+          if ($exe) {
+            Start-Process -FilePath $exe.FullName -ArgumentList '--disable-gpu','C:\probe' -PassThru | Wait-Process -Timeout 60 -ErrorAction SilentlyContinue
+            Get-Process Cursor -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+          }
+          Snap cursor; Diff vscode cursor 'Cursor'
+          "===== %APPDATA%\Cursor\User (depth 2) =====" | Tee-Object C:\probe\report.txt -Append
+          Get-ChildItem "$env:APPDATA\Cursor\User" -Recurse -Force -Depth 2 -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName } | Tee-Object C:\probe\report.txt -Append
+
+      - name: Upload probe report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent-probe-report
+          path: C:\probe
