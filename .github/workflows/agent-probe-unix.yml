@@ -1,0 +1,92 @@
+name: Coding Agent Artifact Probe (macOS + Linux)
+
+# Installs coding-agent CLIs / editors on clean macOS and Ubuntu runners and records
+# exactly which files and directories each one creates under the user's home.
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Baseline snapshot
+        run: |
+          mkdir -p "$HOME/probe"
+          echo "HOME=$HOME  OS=$(uname -a)" | tee "$HOME/probe/report.txt"
+          ls -1a "$HOME" | sort > "$HOME/probe/snap-base.txt"
+
+      - name: Install and launch CLIs
+        continue-on-error: true
+        run: |
+          set +e
+          run_timed() { echo "-> $*" | tee -a "$HOME/probe/report.txt"; timeout 45 bash -c "$* < /dev/null" 2>&1 | head -8 | tee -a "$HOME/probe/report.txt"; }
+          if [ "$(uname)" = "Darwin" ]; then brew install coreutils >/dev/null 2>&1; export PATH="/opt/homebrew/opt/coreutils/libexec/gnubin:/usr/local/opt/coreutils/libexec/gnubin:$PATH"; fi
+          npm install -g @anthropic-ai/claude-code @openai/codex @github/copilot @google/gemini-cli opencode-ai 2>&1 | tail -2
+          run_timed "claude --version"
+          run_timed "claude -p hello"
+          run_timed "codex --version"
+          run_timed "codex exec hello"
+          run_timed "copilot --version"
+          run_timed "copilot -p hello"
+          run_timed "gemini --version"
+          run_timed "gemini -p hello"
+          run_timed "opencode --version"
+          run_timed "opencode run hello"
+          run_timed "opencode auth list"
+
+      - name: Install editors and extensions
+        continue-on-error: true
+        run: |
+          set +e
+          if [ "$(uname)" = "Darwin" ]; then
+            brew install --cask visual-studio-code cursor 2>&1 | tail -3
+            CODE="/Applications/Visual Studio Code.app/Contents/Resources/app/bin/code"
+            CURSOR_APP="/Applications/Cursor.app/Contents/MacOS/Cursor"
+          else
+            sudo apt-get update -qq >/dev/null; sudo apt-get install -y -qq xvfb libfuse2 wget >/dev/null 2>&1
+            wget -qO /tmp/code.deb "https://code.visualstudio.com/sha/download?build=stable&os=linux-deb-x64" && sudo apt-get install -y -qq /tmp/code.deb >/dev/null 2>&1
+            CODE="$(command -v code)"
+            DL=$(curl -sL "https://www.cursor.com/api/download?platform=linux-x64&releaseTrack=stable" | python3 -c 'import sys,json; print(json.load(sys.stdin).get("downloadUrl",""))' 2>/dev/null)
+            echo "cursor download url: $DL" | tee -a "$HOME/probe/report.txt"
+            if [ -n "$DL" ]; then wget -qO /tmp/cursor.AppImage "$DL" && chmod +x /tmp/cursor.AppImage && CURSOR_APP="/tmp/cursor.AppImage --no-sandbox"; fi
+          fi
+          echo "code => $CODE" | tee -a "$HOME/probe/report.txt"
+          for id in anthropic.claude-code openai.chatgpt github.copilot-chat saoudrizwan.claude-dev rooveterinaryinc.roo-cline; do
+            echo "$id => $("$CODE" --install-extension "$id" --force 2>&1 | tail -1)" | tee -a "$HOME/probe/report.txt"
+          done
+          mkdir -p "$HOME/probe/ws"
+          if [ "$(uname)" = "Darwin" ]; then
+            open -a "Visual Studio Code" --args --disable-gpu "$HOME/probe/ws"; sleep 60; pkill -f "Visual Studio Code" || true
+            [ -x "$CURSOR_APP" ] && { "$CURSOR_APP" --disable-gpu "$HOME/probe/ws" >/dev/null 2>&1 & sleep 75; pkill -f Cursor.app || true; }
+          else
+            xvfb-run -a "$CODE" --disable-gpu --no-sandbox --user-data-dir "$HOME/.config/Code" "$HOME/probe/ws" >/dev/null 2>&1 & sleep 60; pkill -f "/code" || true
+            [ -n "$CURSOR_APP" ] && { xvfb-run -a $CURSOR_APP --disable-gpu "$HOME/probe/ws" >/dev/null 2>&1 & sleep 75; pkill -f -i cursor || true; }
+          fi
+          true
+
+      - name: Dump trees of everything created
+        if: always()
+        run: |
+          set +e
+          out="$HOME/probe/trees.txt"
+          ls -1a "$HOME" | sort > "$HOME/probe/snap-after.txt"
+          echo "===== NEW entries in \$HOME =====" | tee "$out"
+          comm -13 "$HOME/probe/snap-base.txt" "$HOME/probe/snap-after.txt" | tee -a "$out"
+          roots="$HOME/.claude $HOME/.claude.json $HOME/.codex $HOME/.copilot $HOME/.gemini $HOME/.local/share/opencode $HOME/.config/opencode $HOME/.local/state/opencode $HOME/.cache/opencode $HOME/.cursor $HOME/.cline $HOME/.vscode/extensions $HOME/.config/Code/User $HOME/.config/Cursor/User $HOME/Library/Application\ Support/Code/User $HOME/Library/Application\ Support/Cursor/User $HOME/Library/Application\ Support/Claude $HOME/Library/Logs/Claude"
+          eval "set -- $roots"
+          for r in "$@"; do
+            if [ ! -e "$r" ]; then echo "===== $r : ABSENT =====" | tee -a "$out"; continue; fi
+            echo "===== $r =====" | tee -a "$out"
+            find "$r" -maxdepth 6 \( -path '*/node_modules' -o -path '*/pkg' -o -path '*/Cache' -o -path '*/CachedData' -o -path '*/Code Cache' -o -path '*/GPUCache' -o -path '*/blob_storage' -o -path '*/Crashpad' -o -path '*/Service Worker' -o -path '*/Local Storage' -o -path '*/IndexedDB' -o -path '*/repos/*' -o -path '*/bin' -o -path '*/CachedExtensionVSIXs' -o -path '*/.vscode/extensions/*/*' -o -path '*/DawnCache' -o -path '*/DawnGraphiteCache' -o -path '*/DawnWebGPUCache' -o -path '*/Session Storage' -o -path '*/Shared Dictionary' \) -prune -o -print 2>/dev/null | sed "s#^$HOME#~#" | while read -r p; do if [ -d "$HOME${p#\~}" ]; then echo "$p/"; else echo "$p  [$(stat -c %s "$HOME${p#\~}" 2>/dev/null || stat -f %z "$HOME${p#\~}")b]"; fi; done | tee -a "$out"
+          done
+
+      - name: Upload probe report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent-probe-${{ matrix.os }}
+          path: ~/probe
