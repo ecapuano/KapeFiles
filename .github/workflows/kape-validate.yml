@@ -1,0 +1,116 @@
+name: KAPE Target Validation (Windows)
+
+# Lives on the kape-ci branch. Dispatch it against any branch of this fork to
+# parse the Targets with real kape.exe and run a live collection against fixtures.
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Branch or ref containing the Targets to validate
+        required: true
+        default: ai-coding-agents
+      targets:
+        description: KAPE --target value (comma separated Target names)
+        required: true
+        default: AICodingAgents
+      fixture_tkapes:
+        description: Space separated .tkape paths (relative to repo) used to plant fixture files
+        required: true
+        default: Targets/Apps/ClaudeCode.tkape Targets/Apps/OpenAICodex.tkape
+
+jobs:
+  validate:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout CI tooling (this branch)
+        uses: actions/checkout@v4
+        with:
+          path: ci-tools
+
+      - name: Checkout Targets under test
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+          path: repo
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      - run: pip install pyyaml
+
+      - name: Download KAPE from the official updater endpoint
+        shell: pwsh
+        run: |
+          Invoke-WebRequest -Uri https://s3.amazonaws.com/cyb-us-prd-kape/kape.zip -OutFile kape.zip
+          Expand-Archive kape.zip -DestinationPath C:\kape-dist
+          $exe = Get-ChildItem C:\kape-dist -Recurse -Filter kape.exe | Select-Object -First 1
+          "KAPE_DIR=$($exe.DirectoryName)" | Out-File $env:GITHUB_ENV -Append
+          & $exe.FullName --version 2>&1 | Select-Object -First 3
+
+      - name: Replace shipped Targets/Modules with the branch under test
+        shell: pwsh
+        run: |
+          Remove-Item "$env:KAPE_DIR\Targets" -Recurse -Force
+          Remove-Item "$env:KAPE_DIR\Modules" -Recurse -Force
+          Copy-Item repo\Targets "$env:KAPE_DIR\Targets" -Recurse
+          Copy-Item repo\Modules "$env:KAPE_DIR\Modules" -Recurse
+
+      - name: kape.exe --tlist (parse every Target)
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory C:\results | Out-Null
+          Set-Location $env:KAPE_DIR
+          & .\kape.exe --tlist .\Targets 2>&1 | Tee-Object C:\results\tlist.txt
+          & .\kape.exe --tlist .\Targets --tdetail 2>&1 | Out-File C:\results\tlist-detail.txt
+          $names = "${{ inputs.targets }}".Split(',') | ForEach-Object { $_.Trim() }
+          $out = Get-Content C:\results\tlist.txt -Raw
+          foreach ($n in $names) {
+            if ($out -notmatch [regex]::Escape($n)) { Write-Error "Target '$n' not listed by kape.exe --tlist"; exit 1 }
+            Write-Host "OK: $n listed"
+          }
+          if ($out -match '(?im)^.*\berror\b.*$') { Write-Warning "kape.exe reported errors while loading Targets - see tlist.txt" }
+
+      - name: Plant fixture files
+        shell: pwsh
+        run: |
+          $tk = "${{ inputs.fixture_tkapes }}".Split(' ') | ForEach-Object { "repo\$_" }
+          python ci-tools\ci\kape_fixtures.py @tk --root C:\ --user testuser --manifest C:\results\manifest.json `
+            --decoy 'C:\Users\%user%\.claude\.credentials.json' `
+            --decoy 'C:\Users\%user%\.codex\auth.json' `
+            --decoy 'C:\Users\%user%\.claude\sessions\1234.abcd.key' `
+            --decoy 'C:\Users\%user%\.claude\plugins\cache\somePlugin\index.js' `
+            --decoy 'C:\Users\%user%\.codex\cache\somePlugin\index.js'
+
+      - name: Live collection with kape.exe
+        shell: pwsh
+        run: |
+          Set-Location $env:KAPE_DIR
+          & .\kape.exe --tsource C: --tdest C:\kout --target "${{ inputs.targets }}" --tflush 2>&1 | Tee-Object C:\results\collection.txt
+          Copy-Item C:\kout\*ConsoleLog* C:\results\ -ErrorAction SilentlyContinue
+          Get-ChildItem C:\kout -Recurse -File | ForEach-Object { $_.FullName } | Out-File C:\results\kout-tree.txt
+
+      - name: Verify collected files against manifest
+        shell: pwsh
+        run: |
+          python ci-tools\ci\kape_verify.py --manifest C:\results\manifest.json --tdest C:\kout 2>&1 | Tee-Object C:\results\verify.txt
+          exit $LASTEXITCODE
+
+      - name: Observe what real Windows installs of Claude Code and Codex create
+        if: always()
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          npm install -g @anthropic-ai/claude-code @openai/codex 2>&1 | Select-Object -Last 3
+          claude --version
+          codex --version
+          "== %USERPROFILE% = $env:USERPROFILE ==" | Tee-Object C:\results\real-install-observation.txt
+          Get-ChildItem $env:USERPROFILE -Force -Filter '.claude*' | ForEach-Object { $_.FullName } | Tee-Object C:\results\real-install-observation.txt -Append
+          Get-ChildItem $env:USERPROFILE -Force -Filter '.codex*' | ForEach-Object { $_.FullName } | Tee-Object C:\results\real-install-observation.txt -Append
+          Get-ChildItem "$env:USERPROFILE\.claude","$env:USERPROFILE\.codex" -Recurse -Force -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName } | Tee-Object C:\results\real-install-observation.txt -Append
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kape-validation-${{ inputs.ref }}
+          path: C:\results
