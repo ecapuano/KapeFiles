@@ -58,7 +58,7 @@ jobs:
             where.exe copilot | Tee-Object C:\probe\report.txt -Append
             RunTimed 'copilot --version' 30
             RunTimed 'copilot -p hello' 40
-          } finally { Snap copilot; Diff base copilot 'GitHub Copilot CLI' }
+          } finally { Snap copilot }
 
       - name: Gemini CLI
         continue-on-error: true
@@ -71,7 +71,7 @@ jobs:
             where.exe gemini | Tee-Object C:\probe\report.txt -Append
             RunTimed 'gemini --version' 30
             RunTimed 'gemini -p hello' 40
-          } finally { Snap gemini; Diff copilot gemini 'Gemini CLI' }
+          } finally { Snap gemini }
 
       - name: OpenCode
         continue-on-error: true
@@ -85,7 +85,7 @@ jobs:
             RunTimed 'opencode --version' 30
             RunTimed 'opencode run hello' 45
             RunTimed 'opencode auth list' 30
-          } finally { Snap opencode; Diff gemini opencode 'OpenCode' }
+          } finally { Snap opencode }
 
       - name: VS Code extension IDs and storage roots
         continue-on-error: true
@@ -110,7 +110,7 @@ jobs:
             Get-ChildItem "$env:APPDATA\Code\User" -Recurse -Force -Depth 2 -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName } | Tee-Object C:\probe\report.txt -Append
             "===== installed extensions (%USERPROFILE%\.vscode\extensions) =====" | Tee-Object C:\probe\report.txt -Append
             Get-ChildItem "$env:USERPROFILE\.vscode\extensions" -Force -ErrorAction SilentlyContinue | ForEach-Object { $_.Name } | Tee-Object C:\probe\report.txt -Append
-          } finally { Snap vscode; Diff opencode vscode 'VS Code + extensions' }
+          } finally { Snap vscode }
 
       - name: Cursor
         continue-on-error: true
@@ -131,7 +131,30 @@ jobs:
             Get-ChildItem "$env:APPDATA\Cursor\User" -Recurse -Force -Depth 2 -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName } | Tee-Object C:\probe\report.txt -Append
             "===== %USERPROFILE%\.cursor (depth 2) =====" | Tee-Object C:\probe\report.txt -Append
             Get-ChildItem "$env:USERPROFILE\.cursor" -Recurse -Force -Depth 2 -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName } | Tee-Object C:\probe\report.txt -Append
-          } finally { Snap cursor; Diff vscode cursor 'Cursor' }
+          } finally { Snap cursor }
+
+      - name: Dump trees of everything the agents created
+        if: always()
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $out = 'C:\probe\trees.txt'
+          $roots = @(
+            "$env:USERPROFILE\.copilot", "$env:USERPROFILE\.gemini", "$env:USERPROFILE\.local", "$env:USERPROFILE\.config",
+            "$env:USERPROFILE\.cache", "$env:USERPROFILE\.cursor", "$env:USERPROFILE\.cline", "$env:USERPROFILE\.claude", "$env:USERPROFILE\.codex",
+            "$env:LOCALAPPDATA\copilot", "$env:APPDATA\Cursor", "$env:APPDATA\Code\User", "$env:APPDATA\Claude", "$env:LOCALAPPDATA\opencode", "$env:APPDATA\opencode"
+          )
+          foreach ($r in $roots) {
+            if (-not (Test-Path $r)) { "===== $r : ABSENT =====" | Tee-Object $out -Append; continue }
+            "===== $r =====" | Tee-Object $out -Append
+            Get-ChildItem $r -Recurse -Force -Depth 6 -ErrorAction SilentlyContinue |
+              Where-Object { $_.FullName -notmatch '\\node_modules\\|\\pkg\\|\\extensions\\[^\\]+\\.+|\\Cache\\|\\CachedData\\|\\Code Cache\\|\\GPUCache\\|\\DawnCache|\\DawnGraphite|\\DawnWebGPU|\\blob_storage\\|\\Crashpad\\|\\Service Worker\\|\\Session Storage\\|\\Local Storage\\|\\IndexedDB\\|\\Shared Dictionary|\\CachedExtensionVSIXs|\\CachedProfilesData|\\repos\\.+|\\snapshot\\[^\\]+\\[^\\]+\\.+|\\history\\[^\\]+\\.+|\\bin\\' } |
+              ForEach-Object { if ($_.PSIsContainer) { "$($_.FullName)\" } else { "$($_.FullName)  [$($_.Length)b]" } } | Tee-Object $out -Append
+          }
+          "===== %USERPROFILE%\.vscode\extensions (names) =====" | Tee-Object $out -Append
+          Get-ChildItem "$env:USERPROFILE\.vscode\extensions" -Force -ErrorAction SilentlyContinue | ForEach-Object { $_.Name } | Tee-Object $out -Append
+          "===== %USERPROFILE%\.cursor\extensions (names) =====" | Tee-Object $out -Append
+          Get-ChildItem "$env:USERPROFILE\.cursor\extensions" -Force -ErrorAction SilentlyContinue | ForEach-Object { $_.Name } | Tee-Object $out -Append
 
       - name: Upload probe report
         if: always()
