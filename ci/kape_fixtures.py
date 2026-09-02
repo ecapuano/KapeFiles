@@ -46,7 +46,9 @@ def main():
     ap.add_argument("--manifest", required=True)
     args = ap.parse_args()
 
-    expected = []
+    # First pass: every directory any entry will need, so file names that collide with a directory can be skipped.
+    entries = []
+    dirs = set()
     for tk in args.tkape:
         with open(tk, encoding="utf-8") as fh:
             doc = yaml.safe_load(fh)
@@ -54,17 +56,27 @@ def main():
             if t["Path"].lower().endswith(".tkape"):
                 continue
             winpath = t["Path"].replace("%user%", args.user).rstrip("\\").replace("*", "wildcard") + "\\"
-            for name in mask_to_names(t.get("FileMask")):
-                if not name or name.startswith("."):
-                    if name in ("", "."):
-                        continue
-                win_file = winpath + name
-                plant(win_to_local(win_file, args.root), f"fixture for {t['Name']}\n{win_file}\n")
-                expected.append({"target": t["Name"], "win": win_file})
+            entries.append((t, winpath))
+            dirs.add(winpath.rstrip("\\").lower())
             if t.get("Recursive"):
-                win_file = winpath + "nested\\deeper\\" + mask_to_names(t.get("FileMask"))[0]
-                plant(win_to_local(win_file, args.root), f"nested fixture for {t['Name']}\n{win_file}\n")
-                expected.append({"target": t["Name"], "win": win_file})
+                dirs.add((winpath + "nested\\deeper").lower())
+                dirs.add((winpath + "nested").lower())
+
+    expected = []
+    for t, winpath in entries:
+        for name in mask_to_names(t.get("FileMask")):
+            if name in ("", "."):
+                continue
+            win_file = winpath + name
+            if win_file.lower() in dirs:
+                print(f"skip {win_file}: collides with a directory used by another entry")
+                continue
+            plant(win_to_local(win_file, args.root), f"fixture for {t['Name']}\n{win_file}\n")
+            expected.append({"target": t["Name"], "win": win_file})
+        if t.get("Recursive"):
+            win_file = winpath + "nested\\deeper\\" + mask_to_names(t.get("FileMask"))[0]
+            plant(win_to_local(win_file, args.root), f"nested fixture for {t['Name']}\n{win_file}\n")
+            expected.append({"target": t["Name"], "win": win_file})
 
     decoys = []
     for d in args.decoy:
